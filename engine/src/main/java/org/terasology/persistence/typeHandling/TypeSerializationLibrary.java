@@ -32,6 +32,7 @@ import org.terasology.naming.Name;
 import org.terasology.persistence.typeHandling.coreTypes.BooleanTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.ByteArrayTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.ByteTypeHandler;
+import org.terasology.persistence.typeHandling.coreTypes.CharacterTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.DoubleTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.FloatTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.IntTypeHandler;
@@ -68,6 +69,8 @@ import org.terasology.rendering.assets.texture.TextureRegion;
 import org.terasology.rendering.nui.Color;
 
 import java.lang.reflect.Type;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -83,6 +86,15 @@ public class TypeSerializationLibrary {
     private List<TypeHandlerFactory> typeHandlerFactories = Lists.newArrayList();
 
     private Map<TypeInfo<?>, TypeHandler<?>> typeHandlerCache = Maps.newHashMap();
+
+    /**
+     * In certain object graphs, creating a {@link TypeHandler} for a type may recursively
+     * require an {@link TypeHandler} for the same type. Without intervention, the recursive
+     * lookup would stack overflow. Thus, for type handlers in the process of being created,
+     * we return a delegate to the {@link TypeHandler} via {@link FutureTypeHandler} which is
+     * wired after the {@link TypeHandler} has been created.
+     */
+    private final ThreadLocal<Map<TypeInfo<?>, FutureTypeHandler<?>>> futureTypeHandlers = new ThreadLocal<>();
 
     private Map<Type, InstanceCreator<?>> instanceCreators = Maps.newHashMap();
     private ConstructorLibrary constructorLibrary;
@@ -108,6 +120,8 @@ public class TypeSerializationLibrary {
         addTypeHandler(Boolean.TYPE, new BooleanTypeHandler());
         addTypeHandler(Byte.class, new ByteTypeHandler());
         addTypeHandler(Byte.TYPE, new ByteTypeHandler());
+        addTypeHandler(Character.class, new CharacterTypeHandler());
+        addTypeHandler(Character.TYPE, new CharacterTypeHandler());
         addTypeHandler(Double.class, new DoubleTypeHandler());
         addTypeHandler(Double.TYPE, new DoubleTypeHandler());
         addTypeHandler(Float.class, new FloatTypeHandler());
@@ -194,7 +208,7 @@ public class TypeSerializationLibrary {
         TypeHandlerFactory factory = new TypeHandlerFactory() {
             @SuppressWarnings("unchecked")
             @Override
-            public <R> Optional<TypeHandler<R>> create(TypeInfo<R> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+            public <R> Optional<TypeHandler<R>> create(TypeInfo<R> typeInfo, TypeHandlerFactoryContext context) {
                 return typeInfo.equals(type) ? Optional.of((TypeHandler<R>) typeHandler) : Optional.empty();
             }
         };
@@ -210,44 +224,98 @@ public class TypeSerializationLibrary {
         instanceCreators.put(typeInfo.getType(), instanceCreator);
     }
 
-    public TypeHandler<?> getTypeHandler(Type type) {
-        return getTypeHandler(TypeInfo.of(type));
+    @SuppressWarnings({"unchecked"})
+    public Optional<TypeHandler<?>> getTypeHandler(Type type, Class<?>...  classes) {
+        return getTypeHandler(type, Arrays.stream(classes)
+                .map(Class::getClassLoader)
+                .toArray(ClassLoader[]::new));
     }
 
-    public <T> TypeHandler<T> getTypeHandler(Class<T> typeClass) {
-        return getTypeHandler(TypeInfo.of(typeClass));
+    @SuppressWarnings({"unchecked"})
+    public Optional<TypeHandler<?>> getTypeHandler(Type type, ClassLoader... contextClassLoaders) {
+        TypeInfo typeInfo = TypeInfo.of(type);
+        return (Optional<TypeHandler<?>>) getTypeHandler(typeInfo, contextClassLoaders);
+    }
+
+
+    public <T> Optional<TypeHandler<T>> getTypeHandler(Class<T> typeClass, Class<?>... classes) {
+        return getTypeHandler(typeClass, Arrays.stream(classes)
+                .map(Class::getClassLoader)
+                .toArray(ClassLoader[]::new));
+    }
+
+    public <T> Optional<TypeHandler<T>> getTypeHandler(Class<T> typeClass, ClassLoader... contextClassLoaders) {
+        return getTypeHandler(TypeInfo.of(typeClass), contextClassLoaders);
     }
 
     @SuppressWarnings("unchecked")
-    public <T> TypeHandler<T> getTypeHandler(TypeInfo<T> type) {
+    public <T> Optional<TypeHandler<T>> getTypeHandler(TypeInfo<T> type, Class<?>... contextClasses) {
+        return getTypeHandler(type, Arrays.stream(contextClasses)
+                .map(Class::getClassLoader)
+                .toArray(ClassLoader[]::new));
+    }
+
+    @SuppressWarnings("unchecked")
+    public <T> Optional<TypeHandler<T>> getTypeHandler(TypeInfo<T> type, ClassLoader... contextClassLoaders) {
+        TypeHandlerFactoryContext context = new TypeHandlerFactoryContext(this, contextClassLoaders);
+
         if (typeHandlerCache.containsKey(type)) {
-            return (TypeHandler<T>) typeHandlerCache.get(type);
+            return Optional.of((TypeHandler<T>) typeHandlerCache.get(type));
         }
 
-        // TODO: Explore reversing typeHandlerFactories itself before building object
-        for (int i = typeHandlerFactories.size() - 1; i >= 0; i--) {
-            TypeHandlerFactory typeHandlerFactory = typeHandlerFactories.get(i);
-            Optional<TypeHandler<T>> typeHandler = typeHandlerFactory.create(type, this);
+        Map<TypeInfo<?>, FutureTypeHandler<?>> futures = futureTypeHandlers.get();
+        boolean cleanupFutureTypeHandlers = false;
 
-            if (typeHandler.isPresent()) {
-                TypeHandler<T> handler = typeHandler.get();
-                typeHandlerCache.put(type, handler);
-                return handler;
+        if (futures == null) {
+            cleanupFutureTypeHandlers = true;
+            futures = new HashMap<>();
+            futureTypeHandlers.set(futures);
+        }
+
+        FutureTypeHandler<T> future = (FutureTypeHandler<T>) futures.get(type);
+
+        if (future != null) {
+            return Optional.of(future);
+        }
+
+        try {
+            future = new FutureTypeHandler<>();
+            futures.put(type, future);
+
+            // TODO: Explore reversing typeHandlerFactories itself before building object
+            for (int i = typeHandlerFactories.size() - 1; i >= 0; i--) {
+                TypeHandlerFactory typeHandlerFactory = typeHandlerFactories.get(i);
+                Optional<TypeHandler<T>> typeHandler = typeHandlerFactory.create(type, context);
+
+                if (typeHandler.isPresent()) {
+                    TypeHandler<T> handler = typeHandler.get();
+
+                    typeHandlerCache.put(type, handler);
+                    future.typeHandler = handler;
+
+                    return Optional.of(handler);
+                }
+            }
+
+            return Optional.empty();
+        } finally {
+            futures.remove(type);
+
+            if (cleanupFutureTypeHandlers) {
+                futureTypeHandlers.remove();
             }
         }
-
-        // TODO: Log error and/or return Optional.empty()
-        return null;
     }
 
     private Map<FieldMetadata<?, ?>, TypeHandler> getFieldHandlerMap(ClassMetadata<?, ?> type) {
         Map<FieldMetadata<?, ?>, TypeHandler> handlerMap = Maps.newHashMap();
         for (FieldMetadata<?, ?> field : type.getFields()) {
-            TypeHandler<?> handler = getTypeHandler(field.getField().getGenericType());
-            if (handler != null) {
-                handlerMap.put(field, handler);
+            Optional<TypeHandler<?>> handler = getTypeHandler(field.getField().getGenericType(), getClass());
+
+            if (handler.isPresent()) {
+                handlerMap.put(field, handler.get());
             } else {
-                logger.info("Unsupported field: '{}.{}'", type.getUri(), field.getName());
+                logger.error("Unsupported field: '{}.{}'", type.getUri(), field.getName());
             }
         }
         return handlerMap;

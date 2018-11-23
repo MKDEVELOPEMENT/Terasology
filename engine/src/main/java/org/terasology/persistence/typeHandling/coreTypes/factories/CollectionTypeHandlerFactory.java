@@ -19,7 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.terasology.persistence.typeHandling.TypeHandler;
 import org.terasology.persistence.typeHandling.TypeHandlerFactory;
-import org.terasology.persistence.typeHandling.TypeSerializationLibrary;
+import org.terasology.persistence.typeHandling.TypeHandlerFactoryContext;
 import org.terasology.persistence.typeHandling.coreTypes.CollectionTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.RuntimeDelegatingTypeHandler;
 import org.terasology.reflection.TypeInfo;
@@ -44,7 +44,7 @@ public class CollectionTypeHandlerFactory implements TypeHandlerFactory {
     }
 
     @Override
-    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeHandlerFactoryContext context) {
         Class<? super T> rawType = typeInfo.getRawType();
 
         if (!Collection.class.isAssignableFrom(rawType)) {
@@ -58,10 +58,15 @@ public class CollectionTypeHandlerFactory implements TypeHandlerFactory {
             return Optional.empty();
         }
 
+        TypeInfo<?> elementTypeInfo = TypeInfo.of(elementType);
+
+        Optional<TypeHandler<?>> declaredElementTypeHandler = context.getTypeSerializationLibrary().getTypeHandler(elementType, context.getClassLoaders());
+
+        @SuppressWarnings({"unchecked"})
         TypeHandler<?> elementTypeHandler = new RuntimeDelegatingTypeHandler(
-                typeSerializationLibrary.getTypeHandler(elementType),
-                TypeInfo.of(elementType),
-                typeSerializationLibrary
+                declaredElementTypeHandler.orElse(null),
+                elementTypeInfo,
+                context
         );
 
         ObjectConstructor<T> collectionConstructor = constructorLibrary.get(typeInfo);

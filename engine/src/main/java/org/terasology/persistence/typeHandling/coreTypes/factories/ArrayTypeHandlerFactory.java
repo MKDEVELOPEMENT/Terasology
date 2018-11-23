@@ -17,7 +17,7 @@ package org.terasology.persistence.typeHandling.coreTypes.factories;
 
 import org.terasology.persistence.typeHandling.TypeHandler;
 import org.terasology.persistence.typeHandling.TypeHandlerFactory;
-import org.terasology.persistence.typeHandling.TypeSerializationLibrary;
+import org.terasology.persistence.typeHandling.TypeHandlerFactoryContext;
 import org.terasology.persistence.typeHandling.coreTypes.ArrayTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.RuntimeDelegatingTypeHandler;
 import org.terasology.reflection.TypeInfo;
@@ -32,7 +32,7 @@ import java.util.Optional;
  */
 public class ArrayTypeHandlerFactory implements TypeHandlerFactory {
     @Override
-    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeHandlerFactoryContext context) {
         Type type = typeInfo.getType();
 
         if (!(type instanceof GenericArrayType || type instanceof Class && ((Class<?>) type).isArray())) {
@@ -45,12 +45,14 @@ public class ArrayTypeHandlerFactory implements TypeHandlerFactory {
 
         TypeInfo<?> elementTypeInfo = TypeInfo.of(elementType);
 
-        TypeHandler<?> elementTypeHandler = new RuntimeDelegatingTypeHandler(
-                typeSerializationLibrary.getTypeHandler(elementType),
-                elementTypeInfo,
-                typeSerializationLibrary
-        );
+        Optional<TypeHandler<?>> declaredElementTypeHandler = context.getTypeSerializationLibrary().getTypeHandler(elementType, context.getClassLoaders());
 
+        @SuppressWarnings({"unchecked"})
+        TypeHandler<?> elementTypeHandler = new RuntimeDelegatingTypeHandler(
+                declaredElementTypeHandler.orElse(null),
+                elementTypeInfo,
+                context
+        );
 
         @SuppressWarnings({"unchecked"})
         TypeHandler<T> typeHandler = new ArrayTypeHandler(elementTypeHandler, elementTypeInfo);

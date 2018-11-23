@@ -20,7 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.terasology.persistence.typeHandling.TypeHandler;
 import org.terasology.persistence.typeHandling.TypeHandlerFactory;
-import org.terasology.persistence.typeHandling.TypeSerializationLibrary;
+import org.terasology.persistence.typeHandling.TypeHandlerFactoryContext;
 import org.terasology.persistence.typeHandling.coreTypes.ObjectFieldMapTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.RuntimeDelegatingTypeHandler;
 import org.terasology.reflection.TypeInfo;
@@ -43,7 +43,7 @@ public class ObjectFieldMapTypeHandlerFactory implements TypeHandlerFactory {
     }
 
     @Override
-    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeHandlerFactoryContext context) {
         Class<? super T> typeClass = typeInfo.getRawType();
 
         if (!Modifier.isAbstract(typeClass.getModifiers())
@@ -53,14 +53,20 @@ public class ObjectFieldMapTypeHandlerFactory implements TypeHandlerFactory {
 
             getResolvedFields(typeInfo).forEach(
                     (field, fieldType) ->
-                            fieldTypeHandlerMap.put(
-                                    field,
-                                    new RuntimeDelegatingTypeHandler(
-                                            typeSerializationLibrary.getTypeHandler(fieldType),
-                                            TypeInfo.of(fieldType),
-                                            typeSerializationLibrary
-                                    )
-                            )
+                    {
+                        Optional<TypeHandler<?>> declaredFieldTypeHandler = context.getTypeSerializationLibrary().getTypeHandler(fieldType, context.getClassLoaders());
+
+                        TypeInfo<?> fieldTypeInfo = TypeInfo.of(fieldType);
+
+                        fieldTypeHandlerMap.put(
+                                field,
+                                new RuntimeDelegatingTypeHandler(
+                                        declaredFieldTypeHandler.orElse(null),
+                                        fieldTypeInfo,
+                                        context
+                                )
+                        );
+                    }
             );
 
             ObjectFieldMapTypeHandler<T> mappedHandler =

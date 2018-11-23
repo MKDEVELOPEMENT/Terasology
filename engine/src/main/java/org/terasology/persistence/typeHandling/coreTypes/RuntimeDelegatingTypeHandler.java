@@ -22,9 +22,12 @@ import org.terasology.persistence.typeHandling.PersistedData;
 import org.terasology.persistence.typeHandling.PersistedDataMap;
 import org.terasology.persistence.typeHandling.PersistedDataSerializer;
 import org.terasology.persistence.typeHandling.TypeHandler;
+import org.terasology.persistence.typeHandling.TypeHandlerFactoryContext;
 import org.terasology.persistence.typeHandling.TypeSerializationLibrary;
 import org.terasology.reflection.TypeInfo;
+import org.terasology.utilities.ReflectionUtil;
 
+import java.lang.reflect.Type;
 import java.util.Map;
 import java.util.Optional;
 
@@ -37,49 +40,59 @@ import java.util.Optional;
  * @param <T> The base type whose instances may be delegated to a subtype's {@link TypeHandler} at runtime.
  */
 public class RuntimeDelegatingTypeHandler<T> extends TypeHandler<T> {
-    private static final String TYPE_FIELD = "@type";
-    private static final String VALUE_FIELD = "@value";
+    static final String TYPE_FIELD = "@type";
+    static final String VALUE_FIELD = "@value";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RuntimeDelegatingTypeHandler.class);
 
     private TypeHandler<T> delegateHandler;
     private TypeInfo<T> typeInfo;
     private TypeSerializationLibrary typeSerializationLibrary;
+    private ClassLoader[] classLoaders;
 
-    public RuntimeDelegatingTypeHandler(TypeHandler<T> delegateHandler, TypeInfo<T> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+    public RuntimeDelegatingTypeHandler(TypeHandler<T> delegateHandler, TypeInfo<T> typeInfo, TypeHandlerFactoryContext context) {
         this.delegateHandler = delegateHandler;
         this.typeInfo = typeInfo;
-        this.typeSerializationLibrary = typeSerializationLibrary;
+        this.typeSerializationLibrary = context.getTypeSerializationLibrary();
+        this.classLoaders = context.getClassLoaders();
     }
 
     @Override
     public PersistedData serializeNonNull(T value, PersistedDataSerializer serializer) {
         // If primitive, don't go looking for the runtime type, serialize as is
         if (typeInfo.getRawType().isPrimitive()) {
-            return delegateHandler.serialize(value, serializer);
+            if (delegateHandler != null) {
+                return delegateHandler.serialize(value, serializer);
+            }
+
+            LOGGER.error("Primitive {} does not have a TypeHandler", typeInfo.getRawType().getName());
+            return serializer.serializeNull();
         }
 
         TypeHandler<T> chosenHandler = delegateHandler;
         Class<?> runtimeClass = getRuntimeTypeIfMoreSpecific(typeInfo, value);
 
         if (!typeInfo.getRawType().equals(runtimeClass)) {
-            TypeHandler<T> runtimeTypeHandler =
-                    (TypeHandler<T>) typeSerializationLibrary.getTypeHandler(runtimeClass);
+            Optional<TypeHandler<?>> runtimeTypeHandler = typeSerializationLibrary.getTypeHandler((Type) runtimeClass, classLoaders);
 
-            if (delegateHandler == null) {
-                chosenHandler = runtimeTypeHandler;
-            } else if (runtimeTypeHandler.getClass().equals(delegateHandler.getClass())) {
-                // Both handlers are of same type, use delegateHandler
-                chosenHandler = delegateHandler;
-            } else if (!(runtimeTypeHandler instanceof ObjectFieldMapTypeHandler)) {
-                // Custom handler for runtime type
-                chosenHandler = runtimeTypeHandler;
-            } else if (!(delegateHandler instanceof ObjectFieldMapTypeHandler)) {
-                // Custom handler for specified type
-                chosenHandler = delegateHandler;
-            } else {
-                chosenHandler = runtimeTypeHandler;
-            }
+            chosenHandler = (TypeHandler<T>) runtimeTypeHandler
+                    .map(typeHandler -> {
+                        if (delegateHandler == null) {
+                            return typeHandler;
+                        } else if (typeHandler.getClass().equals(delegateHandler.getClass())) {
+                            // Both handlers are of same type, use delegateHandler
+                            return delegateHandler;
+                        } else if (!(typeHandler instanceof ObjectFieldMapTypeHandler)) {
+                            // Custom handler for runtime type
+                            return typeHandler;
+                        } else if (!(delegateHandler instanceof ObjectFieldMapTypeHandler)) {
+                            // Custom handler for specified type
+                            return delegateHandler;
+                        }
+
+                        return typeHandler;
+                    })
+                    .orElse(delegateHandler);
         }
 
         if (chosenHandler == delegateHandler) {
@@ -132,24 +145,29 @@ public class RuntimeDelegatingTypeHandler<T> extends TypeHandler<T> {
             return delegateHandler.deserialize(data);
         }
 
-        String typeName = valueMap.getAsString(TYPE_FIELD);
+        String runtimeTypeName = valueMap.getAsString(TYPE_FIELD);
 
-        // TODO: Use context class loaders
-        Class<?> typeToDeserializeAs;
+        Optional<Class<?>> typeToDeserializeAs = ReflectionUtil.findClassInClassLoaders(runtimeTypeName, classLoaders);
 
-        try {
-            typeToDeserializeAs = Class.forName(typeName);
-        } catch (ClassNotFoundException e) {
-            LOGGER.error("Cannot find class {}", typeName);
-            return null;
+        if (!typeToDeserializeAs.isPresent()) {
+            LOGGER.error("Cannot find class to deserialize {}", runtimeTypeName);
+            return Optional.empty();
         }
 
-        TypeHandler<T> typeHandler =
-                (TypeHandler<T>) typeSerializationLibrary.getTypeHandler(typeToDeserializeAs);
+        TypeHandler<T> runtimeTypeHandler = (TypeHandler<T>) typeSerializationLibrary.getTypeHandler(typeToDeserializeAs.get(), classLoaders)
+                // To avoid compile errors in the orElseGet
+                .map(typeHandler -> (TypeHandler) typeHandler)
+                .orElseGet(() -> {
+                    LOGGER.warn("Cannot find TypeHandler for runtime class {}, " +
+                                    "deserializing as base class {}",
+                            runtimeTypeName, typeInfo.getRawType().getName());
+                    return delegateHandler;
+                });
 
         PersistedData valueData = valueMap.get(VALUE_FIELD);
 
-        return typeHandler.deserialize(valueData);
+        return runtimeTypeHandler.deserialize(valueData);
 
     }
+
 }

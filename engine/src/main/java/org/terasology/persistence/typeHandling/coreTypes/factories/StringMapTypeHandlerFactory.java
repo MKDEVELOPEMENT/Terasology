@@ -19,7 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.terasology.persistence.typeHandling.TypeHandler;
 import org.terasology.persistence.typeHandling.TypeHandlerFactory;
-import org.terasology.persistence.typeHandling.TypeSerializationLibrary;
+import org.terasology.persistence.typeHandling.TypeHandlerFactoryContext;
 import org.terasology.persistence.typeHandling.coreTypes.RuntimeDelegatingTypeHandler;
 import org.terasology.persistence.typeHandling.coreTypes.StringMapTypeHandler;
 import org.terasology.reflection.TypeInfo;
@@ -34,7 +34,7 @@ public class StringMapTypeHandlerFactory implements TypeHandlerFactory {
 
     @SuppressWarnings("unchecked")
     @Override
-    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeHandlerFactoryContext context) {
         if (!Map.class.isAssignableFrom(typeInfo.getRawType())) {
             return Optional.empty();
         }
@@ -51,10 +51,15 @@ public class StringMapTypeHandlerFactory implements TypeHandlerFactory {
             return Optional.empty();
         }
 
-        TypeHandler<T> valueTypeHandler = new RuntimeDelegatingTypeHandler(
-                typeSerializationLibrary.getTypeHandler(valueType),
-                TypeInfo.of(valueType),
-                typeSerializationLibrary
+        Optional<TypeHandler<?>> declaredValueTypeHandler = context.getTypeSerializationLibrary().getTypeHandler(valueType, context.getClassLoaders());
+
+        TypeInfo<?> valueTypeInfo = TypeInfo.of(valueType);
+
+        @SuppressWarnings({"unchecked"})
+        TypeHandler<?> valueTypeHandler = new RuntimeDelegatingTypeHandler(
+                declaredValueTypeHandler.orElse(null),
+                valueTypeInfo,
+                context
         );
 
         return Optional.of((TypeHandler<T>) new StringMapTypeHandler<>(valueTypeHandler));

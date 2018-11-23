@@ -15,30 +15,36 @@
  */
 package org.terasology.persistence.typeHandling.mathTypes.factories;
 
-import com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.terasology.math.geom.Rect2f;
 import org.terasology.math.geom.Vector2f;
 import org.terasology.persistence.typeHandling.TypeHandler;
 import org.terasology.persistence.typeHandling.TypeHandlerFactory;
-import org.terasology.persistence.typeHandling.TypeSerializationLibrary;
+import org.terasology.persistence.typeHandling.TypeHandlerFactoryContext;
 import org.terasology.persistence.typeHandling.mathTypes.Rect2fTypeHandler;
 import org.terasology.reflection.TypeInfo;
 
 import java.util.Optional;
 
 public class Rect2fTypeHandlerFactory implements TypeHandlerFactory {
+    private static final Logger LOGGER = LoggerFactory.getLogger(Rect2fTypeHandlerFactory.class);
+
     @Override
-    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeSerializationLibrary typeSerializationLibrary) {
+    public <T> Optional<TypeHandler<T>> create(TypeInfo<T> typeInfo, TypeHandlerFactoryContext context) {
         if (!typeInfo.equals(TypeInfo.of(Rect2f.class))) {
             return Optional.empty();
         }
 
-        TypeHandler<Vector2f> vector2fTypeHandler = typeSerializationLibrary.getTypeHandler(Vector2f.class);
+        Optional<TypeHandler<Vector2f>> vector2fTypeHandler = context.getTypeSerializationLibrary().getTypeHandler(Vector2f.class, context.getClassLoaders());
 
-        Preconditions.checkNotNull(vector2fTypeHandler, "No Vector2f type handler found");
+        if (!vector2fTypeHandler.isPresent()) {
+            LOGGER.error("No Vector2f type handler found");
+            return Optional.empty();
+        }
 
         Rect2fTypeHandler rect2fTypeHandler =
-                new Rect2fTypeHandler(vector2fTypeHandler);
+                new Rect2fTypeHandler(vector2fTypeHandler.get());
 
         return Optional.of((TypeHandler<T>) rect2fTypeHandler);
 
